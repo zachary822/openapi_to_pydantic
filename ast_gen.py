@@ -7,8 +7,21 @@ from functools import partial, reduce
 import black
 import isort.api
 import isort.profiles
+from autoflake import fix_code
 
 REF = re.compile(r"^#/components/schemas/(.+)$")
+
+
+def has_ref(config: dict) -> bool:
+    match config:
+        case {"$ref": _}:
+            return True
+        case {"type": "array", "items": items}:
+            return has_ref(items)
+        case {"anyOf": items}:
+            return any(map(has_ref, items))
+        case _:
+            return False
 
 
 def convert_type(config):
@@ -20,8 +33,10 @@ def convert_type(config):
         case {"type": "string"}:
             return ast.Name(id="str", ctx=ast.Store())
         case {"$ref": ref} if ref.startswith("#/components/schemas/"):
-            return ast.Constant(value=REF.sub(r'"\1"', ref))
-        case {"type": "array", "items": {"anyOf": items}}:
+            return ast.Constant(value=REF.match(ref).group(1))
+        case {"type": "array", "items": arr_conf}:
+            return convert_type(arr_conf)
+        case {"anyOf": items}:
             return ast.Subscript(
                 value=ast.Attribute(
                     value=ast.Name(id="typing", ctx=ast.Load()),
@@ -65,7 +80,6 @@ if __name__ == "__main__":
         spec = json.load(f)
 
     for name, schema in spec["components"]["schemas"].items():
-        print(schema)
         match schema:
             case {"type": "object", "properties": properties}:
                 models.append(
@@ -84,7 +98,7 @@ if __name__ == "__main__":
                         decorator_list=[],
                     )
                 )
-                if any("$ref" in v for v in properties.values()):
+                if any(map(has_ref, properties.values())):
                     forward_refs.append(
                         ast.Expr(
                             value=ast.Call(
@@ -125,10 +139,13 @@ if __name__ == "__main__":
     code = reduce(
         lambda acc, f: f(acc),
         [
+            ast.fix_missing_locations,
+            ast.unparse,
+            partial(fix_code, remove_all_unused_imports=True),
             partial(isort.api.sort_code_string, **isort.profiles.black),
             partial(black.format_str, mode=black.Mode()),
         ],
-        ast.unparse(ast.fix_missing_locations(main)),
+        main,
     )
 
     print(code)

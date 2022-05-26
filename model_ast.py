@@ -5,6 +5,10 @@ import typing
 
 
 class A(BaseModel):
+    """description
+    aoeu
+    aoeuoe"""
+
     a: int
     b: "B"
     c: typing.Union[int, str]
