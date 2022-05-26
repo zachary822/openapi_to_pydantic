@@ -9,10 +9,11 @@ class A(BaseModel):
     aoeu
     aoeuoe"""
 
-    a: int
+    a: list[int]
     b: "B"
     c: typing.Union[int, str]
     d: typing.Any
+    e: bool = False
 
 
 class B(str, Enum):

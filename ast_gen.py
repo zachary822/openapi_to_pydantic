@@ -1,13 +1,20 @@
 import argparse
 import ast
 import json
+import mimetypes
 import re
 from functools import partial, reduce
+from itertools import starmap
 
 import black
 import isort.api
 import isort.profiles
+import yaml
 from autoflake import fix_code
+
+mimetypes.add_type("application/yaml", ".yml")
+mimetypes.add_type("application/yaml", ".yaml")
+
 
 REF = re.compile(r"^#/components/schemas/(.+)$")
 
@@ -35,7 +42,11 @@ def convert_type(config):
         case {"$ref": ref} if ref.startswith("#/components/schemas/"):
             return ast.Constant(value=REF.match(ref).group(1))
         case {"type": "array", "items": arr_conf}:
-            return convert_type(arr_conf)
+            return ast.Subscript(
+                value=ast.Name(id="list", ctx=ast.Load()),
+                slice=convert_type(arr_conf),
+                ctx=ast.Load(),
+            )
         case {"anyOf": items}:
             return ast.Subscript(
                 value=ast.Attribute(
@@ -49,9 +60,28 @@ def convert_type(config):
                 ),
                 ctx=ast.Load(),
             )
+        case {"type": "boolean"}:
+            return ast.Name(id="bool", ctx=ast.Load())
         case _:
             return ast.Attribute(
                 value=ast.Name(id="typing", ctx=ast.Load()), attr="Any", ctx=ast.Load()
+            )
+
+
+def get_assign(name, config):
+    match config:
+        case {"default": value}:
+            return ast.AnnAssign(
+                target=ast.Name(id=name, ctx=ast.Store()),
+                annotation=convert_type(config),
+                value=ast.Constant(value=value),
+                simple=1,
+            )
+        case _:
+            return ast.AnnAssign(
+                target=ast.Name(id=name, ctx=ast.Store()),
+                annotation=convert_type(config),
+                simple=1,
             )
 
 
@@ -69,7 +99,7 @@ if __name__ == "__main__":
         ast.ImportFrom(module="pydantic", names=[ast.alias(name="BaseModel")], level=0),
         ast.ImportFrom(module="enum", names=[ast.alias(name="Enum")], level=0),
         ast.ImportFrom(module="datetime", names=[ast.alias(name="datetime")], level=0),
-        ast.Import(module="typing", names=[], level=0),
+        ast.Import(names=[ast.alias(name="typing")]),
     ]
 
     models: list[ast.ClassDef] = []
@@ -77,7 +107,14 @@ if __name__ == "__main__":
     forward_refs = []
 
     with open(args.openapi) as f:
-        spec = json.load(f)
+        filetype, encoding = mimetypes.guess_type(f.name)
+        match filetype:
+            case "application/json":
+                spec = json.load(f)
+            case "application/yaml":
+                spec = yaml.load(f, Loader=yaml.SafeLoader)
+            case t:
+                raise ValueError(f"unsupported file type {t}")
 
     for name, schema in spec["components"]["schemas"].items():
         match schema:
@@ -87,14 +124,7 @@ if __name__ == "__main__":
                         name=name,
                         bases=[ast.Name(id="BaseModel", ctx=ast.Load())],
                         keywords=[],
-                        body=[
-                            ast.AnnAssign(
-                                target=ast.Name(id=name, ctx=ast.Store()),
-                                annotation=convert_type(config),
-                                simple=1,
-                            )
-                            for name, config in properties.items()
-                        ],
+                        body=list(starmap(get_assign, properties.items())),
                         decorator_list=[],
                     )
                 )
