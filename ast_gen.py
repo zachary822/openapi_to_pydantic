@@ -31,7 +31,7 @@ def has_ref(config: dict) -> bool:
             return False
 
 
-def convert_type(config):
+def get_type_annotation(config):
     match config:
         case {"type": "integer"}:
             return ast.Name(id="int", ctx=ast.Store())
@@ -44,7 +44,7 @@ def convert_type(config):
         case {"type": "array", "items": arr_conf}:
             return ast.Subscript(
                 value=ast.Name(id="list", ctx=ast.Load()),
-                slice=convert_type(arr_conf),
+                slice=get_type_annotation(arr_conf),
                 ctx=ast.Load(),
             )
         case {"anyOf": items}:
@@ -55,7 +55,7 @@ def convert_type(config):
                     ctx=ast.Load(),
                 ),
                 slice=ast.Tuple(
-                    elts=[convert_type(item) for item in items],
+                    elts=[get_type_annotation(item) for item in items],
                     ctx=ast.Load(),
                 ),
                 ctx=ast.Load(),
@@ -68,26 +68,65 @@ def convert_type(config):
             )
 
 
-def get_assign(name, config):
+def get_field(name, config):
     match config:
         case {"default": value}:
             return ast.AnnAssign(
                 target=ast.Name(id=name, ctx=ast.Store()),
-                annotation=convert_type(config),
+                annotation=get_type_annotation(config),
                 value=ast.Constant(value=value),
                 simple=1,
             )
         case _:
             return ast.AnnAssign(
                 target=ast.Name(id=name, ctx=ast.Store()),
-                annotation=convert_type(config),
+                annotation=get_type_annotation(config),
                 simple=1,
             )
+
+
+def get_enum_bases(enum_type):
+    match enum_type:
+        case "string":
+            return [
+                ast.Name(id="str", ctx=ast.Load()),
+                ast.Name(id="Enum", ctx=ast.Load()),
+            ]
+        case "integer":
+            return [
+                ast.Name(id="int", ctx=ast.Load()),
+                ast.Name(id="Enum", ctx=ast.Load()),
+            ]
+        case _:
+            return [
+                ast.Name(id="Enum", ctx=ast.Load()),
+            ]
+
+
+def get_enum_body(enum_type, members):
+    match enum_type:
+        case "integer":
+            return [
+                ast.Assign(
+                    targets=[ast.Name(id=chr(97 + i), ctx=ast.Store())],
+                    value=ast.Constant(value=m),
+                )
+                for i, m in enumerate(members)
+            ]
+        case _:
+            return [
+                ast.Assign(
+                    targets=[ast.Name(id=m, ctx=ast.Store())],
+                    value=ast.Constant(value=m),
+                )
+                for m in members
+            ]
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("openapi")
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
     main = ast.Module(
@@ -124,7 +163,7 @@ if __name__ == "__main__":
                         name=name,
                         bases=[ast.Name(id="BaseModel", ctx=ast.Load())],
                         keywords=[],
-                        body=list(starmap(get_assign, properties.items())),
+                        body=list(starmap(get_field, properties.items())),
                         decorator_list=[],
                     )
                 )
@@ -142,22 +181,23 @@ if __name__ == "__main__":
                             )
                         ),
                     )
-            case {"type": "string", "enum": members}:
+            case {"type": enum_type, "enum": members}:
                 models.append(
                     ast.ClassDef(
                         name=name,
-                        bases=[
-                            ast.Name(id="str", ctx=ast.Load()),
-                            ast.Name(id="Enum", ctx=ast.Load()),
-                        ],
+                        bases=get_enum_bases(enum_type),
                         keywords=[],
-                        body=[
-                            ast.Assign(
-                                targets=[ast.Name(id=m, ctx=ast.Store())],
-                                value=ast.Constant(value=m),
-                            )
-                            for m in members
-                        ],
+                        body=get_enum_body(enum_type, members),
+                        decorator_list=[],
+                    )
+                )
+            case {"enum": members}:
+                models.append(
+                    ast.ClassDef(
+                        name=name,
+                        bases=get_enum_bases(None),
+                        keywords=[],
+                        body=get_enum_body(None, members),
                         decorator_list=[],
                     )
                 )
@@ -166,15 +206,22 @@ if __name__ == "__main__":
     main.body.extend(models)
     main.body.extend(forward_refs)
 
+    output_ops = [
+        ast.fix_missing_locations,
+        ast.unparse,
+        partial(fix_code, remove_all_unused_imports=True),
+        partial(isort.api.sort_code_string, **isort.profiles.black),
+        partial(black.format_str, mode=black.Mode()),
+    ]
+
+    debug_ops = [
+        ast.fix_missing_locations,
+        partial(ast.dump, indent=4),
+    ]
+
     code = reduce(
         lambda acc, f: f(acc),
-        [
-            ast.fix_missing_locations,
-            ast.unparse,
-            partial(fix_code, remove_all_unused_imports=True),
-            partial(isort.api.sort_code_string, **isort.profiles.black),
-            partial(black.format_str, mode=black.Mode()),
-        ],
+        debug_ops if args.debug else output_ops,
         main,
     )
 
