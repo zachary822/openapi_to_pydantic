@@ -1,24 +1,10 @@
 __all__ = ["openapi_to_pydantic"]
 
-import argparse
 import ast
-import json
-import mimetypes
 import re
-import sys
 from functools import partial, reduce
 from itertools import starmap
 from operator import getitem
-
-import black
-import isort.api
-import isort.profiles
-import yaml
-from autoflake import fix_code
-
-mimetypes.add_type("application/yaml", ".yml")
-mimetypes.add_type("application/yaml", ".yaml")
-
 
 REF = re.compile(r"^#/components/schemas/(.+)$")
 
@@ -225,48 +211,3 @@ def openapi_to_pydantic(spec: dict) -> ast.Module:
     main.body.extend(forward_refs)
 
     return ast.fix_missing_locations(main)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("openapi")
-    parser.add_argument(
-        "-o",
-        "--output",
-        default=sys.stdout,
-        type=argparse.FileType("w"),
-        required=False,
-    )
-    parser.add_argument("--debug", action="store_true")
-    args = parser.parse_args()
-
-    with open(args.openapi) as f:
-        filetype, encoding = mimetypes.guess_type(f.name)
-        match filetype:
-            case "application/json":
-                spec = json.load(f)
-            case "application/yaml":
-                spec = yaml.load(f, Loader=yaml.SafeLoader)
-            case t:
-                raise ValueError(f"unsupported file type {t}")
-
-    main = openapi_to_pydantic(spec)
-
-    output_ops = [
-        ast.unparse,
-        partial(fix_code, remove_all_unused_imports=True),
-        partial(isort.api.sort_code_string, **isort.profiles.black),
-        partial(black.format_str, mode=black.Mode()),
-    ]
-
-    debug_ops = [
-        partial(ast.dump, indent=4),
-    ]
-
-    code = reduce(
-        lambda acc, f: f(acc),
-        debug_ops if args.debug else output_ops,
-        main,
-    )
-
-    print(code, file=args.output, end="")
