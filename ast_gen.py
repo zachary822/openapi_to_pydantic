@@ -1,3 +1,5 @@
+__all__ = ["openapi_to_ast"]
+
 import argparse
 import ast
 import json
@@ -146,13 +148,7 @@ def get_enum_body(enum_type, members):
             ]
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("openapi")
-    parser.add_argument("-o", "--output", default=sys.stdout, type=argparse.FileType("w"), required=False)
-    parser.add_argument("--debug", action="store_true")
-    args = parser.parse_args()
-
+def openapi_to_ast(spec: dict) -> ast.Module:
     main = ast.Module(
         body=[],
         type_ignores=[],
@@ -169,16 +165,6 @@ if __name__ == "__main__":
     models: list[ast.ClassDef] = []
 
     forward_refs = []
-
-    with open(args.openapi) as f:
-        filetype, encoding = mimetypes.guess_type(f.name)
-        match filetype:
-            case "application/json":
-                spec = json.load(f)
-            case "application/yaml":
-                spec = yaml.load(f, Loader=yaml.SafeLoader)
-            case t:
-                raise ValueError(f"unsupported file type {t}")
 
     for name, schema in spec["components"]["schemas"].items():
         required = schema.get("required", [])
@@ -238,8 +224,35 @@ if __name__ == "__main__":
     main.body.extend(models)
     main.body.extend(forward_refs)
 
+    return ast.fix_missing_locations(main)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("openapi")
+    parser.add_argument(
+        "-o",
+        "--output",
+        default=sys.stdout,
+        type=argparse.FileType("w"),
+        required=False,
+    )
+    parser.add_argument("--debug", action="store_true")
+    args = parser.parse_args()
+
+    with open(args.openapi) as f:
+        filetype, encoding = mimetypes.guess_type(f.name)
+        match filetype:
+            case "application/json":
+                spec = json.load(f)
+            case "application/yaml":
+                spec = yaml.load(f, Loader=yaml.SafeLoader)
+            case t:
+                raise ValueError(f"unsupported file type {t}")
+
+    main = openapi_to_ast(spec)
+
     output_ops = [
-        ast.fix_missing_locations,
         ast.unparse,
         partial(fix_code, remove_all_unused_imports=True),
         partial(isort.api.sort_code_string, **isort.profiles.black),
@@ -247,7 +260,6 @@ if __name__ == "__main__":
     ]
 
     debug_ops = [
-        ast.fix_missing_locations,
         partial(ast.dump, indent=4),
     ]
 
