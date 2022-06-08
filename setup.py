@@ -8,5 +8,9 @@ setup(
     packages=find_packages(),
     install_requires=[
         "pydantic",
+        "black",
+        "isort",
+        "pyyaml",
+        "autoflake",
     ],
 )
