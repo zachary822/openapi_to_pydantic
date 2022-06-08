@@ -3,8 +3,10 @@ import ast
 import json
 import mimetypes
 import re
+import sys
 from functools import partial, reduce
 from itertools import starmap
+from operator import getitem
 
 import black
 import isort.api
@@ -31,20 +33,26 @@ def has_ref(config: dict) -> bool:
             return False
 
 
-def get_type_annotation(config):
+def get_type_annotation(config, spec):
     match config:
         case {"type": "integer"}:
             return ast.Name(id="int", ctx=ast.Store())
         case {"type": "string", "format": "date-time"}:
             return ast.Name(id="datetime", ctx=ast.Store())
+        case {"type": "string", "format": "uuid"} | {
+            "type": "string",
+            "format": "uuid4",
+        }:
+            return ast.Name(id="UUID", ctx=ast.Store())
         case {"type": "string"}:
             return ast.Name(id="str", ctx=ast.Store())
-        case {"$ref": ref} if ref.startswith("#/components/schemas/"):
-            return ast.Constant(value=REF.match(ref).group(1))
+        case {"$ref": ref} if ref.startswith("#/"):
+            obj = reduce(getitem, ref.split("/")[1:], spec)
+            return ast.Constant(value=obj["title"])
         case {"type": "array", "items": arr_conf}:
             return ast.Subscript(
                 value=ast.Name(id="list", ctx=ast.Load()),
-                slice=get_type_annotation(arr_conf),
+                slice=get_type_annotation(arr_conf, spec),
                 ctx=ast.Load(),
             )
         case {"anyOf": items}:
@@ -55,11 +63,13 @@ def get_type_annotation(config):
                     ctx=ast.Load(),
                 ),
                 slice=ast.Tuple(
-                    elts=[get_type_annotation(item) for item in items],
+                    elts=[get_type_annotation(item, spec) for item in items],
                     ctx=ast.Load(),
                 ),
                 ctx=ast.Load(),
             )
+        case {"allOf": [item]}:
+            return get_type_annotation(item, spec)
         case {"type": "boolean"}:
             return ast.Name(id="bool", ctx=ast.Load())
         case _:
@@ -68,19 +78,32 @@ def get_type_annotation(config):
             )
 
 
-def get_field(name, config):
+def get_field(name, config, spec, required=None):
+    if name not in required and required:
+        annotation = ast.Subscript(
+            value=ast.Attribute(
+                value=ast.Name(id="typing", ctx=ast.Load()),
+                attr="Optional",
+                ctx=ast.Load(),
+            ),
+            slice=get_type_annotation(config, spec),
+            ctx=ast.Load(),
+        )
+    else:
+        annotation = get_type_annotation(config, spec)
+
     match config:
         case {"default": value}:
             return ast.AnnAssign(
                 target=ast.Name(id=name, ctx=ast.Store()),
-                annotation=get_type_annotation(config),
+                annotation=annotation,
                 value=ast.Constant(value=value),
                 simple=1,
             )
         case _:
             return ast.AnnAssign(
                 target=ast.Name(id=name, ctx=ast.Store()),
-                annotation=get_type_annotation(config),
+                annotation=annotation,
                 simple=1,
             )
 
@@ -126,6 +149,7 @@ def get_enum_body(enum_type, members):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("openapi")
+    parser.add_argument("-o", "--output", default=sys.stdout, type=argparse.FileType("w"), required=False)
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -138,6 +162,7 @@ if __name__ == "__main__":
         ast.ImportFrom(module="pydantic", names=[ast.alias(name="BaseModel")], level=0),
         ast.ImportFrom(module="enum", names=[ast.alias(name="Enum")], level=0),
         ast.ImportFrom(module="datetime", names=[ast.alias(name="datetime")], level=0),
+        ast.ImportFrom(module="uuid", names=[ast.alias(name="UUID")], level=0),
         ast.Import(names=[ast.alias(name="typing")]),
     ]
 
@@ -156,6 +181,8 @@ if __name__ == "__main__":
                 raise ValueError(f"unsupported file type {t}")
 
     for name, schema in spec["components"]["schemas"].items():
+        required = schema.get("required", [])
+
         match schema:
             case {"type": "object", "properties": properties}:
                 models.append(
@@ -163,7 +190,12 @@ if __name__ == "__main__":
                         name=name,
                         bases=[ast.Name(id="BaseModel", ctx=ast.Load())],
                         keywords=[],
-                        body=list(starmap(get_field, properties.items())),
+                        body=list(
+                            starmap(
+                                partial(get_field, required=required, spec=spec),
+                                properties.items(),
+                            )
+                        ),
                         decorator_list=[],
                     )
                 )
@@ -225,4 +257,4 @@ if __name__ == "__main__":
         main,
     )
 
-    print(code)
+    print(code, file=args.output, end="")
