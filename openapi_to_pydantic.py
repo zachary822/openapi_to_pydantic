@@ -1,4 +1,4 @@
-__all__ = ["openapi_to_ast"]
+__all__ = ["openapi_to_pydantic"]
 
 import argparse
 import ast
@@ -148,7 +148,7 @@ def get_enum_body(enum_type, members):
             ]
 
 
-def openapi_to_ast(spec: dict) -> ast.Module:
+def openapi_to_pydantic(spec: dict) -> ast.Module:
     main = ast.Module(
         body=[],
         type_ignores=[],
@@ -250,7 +250,7 @@ if __name__ == "__main__":
             case t:
                 raise ValueError(f"unsupported file type {t}")
 
-    main = openapi_to_ast(spec)
+    main = openapi_to_pydantic(spec)
 
     output_ops = [
         ast.unparse,
